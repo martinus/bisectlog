@@ -43,6 +43,77 @@ def run_recipe(repo, body, cache=None):
     return p.returncode, p.stderr, cache
 
 
+def make_linear(n=16, bug_at=10):
+    d = tempfile.mkdtemp(prefix="bisectlib-lin-")
+    sh(d, "git", "init", "-q")
+    sh(d, "git", "config", "user.email", "t@t.t")
+    sh(d, "git", "config", "user.name", "T")
+    shas = []
+    for i in range(1, n + 1):
+        Path(d, "code.txt").write_text("BUG\n" if i >= bug_at else "ok\n")
+        Path(d, f"f{i}").write_text(str(i))
+        sh(d, "git", "add", "-A")
+        date = f"2026-04-{i:02d}T12:00:00"
+        sh(d, "git", "commit", "-q", "-m", f"commit {i}",
+           env={"GIT_AUTHOR_DATE": date, "GIT_COMMITTER_DATE": date})
+        shas.append(sh(d, "git", "rev-parse", "HEAD").stdout.strip())
+    return d, shas
+
+
+def run_script(repo, name, body, env=None):
+    Path(repo, name).write_text(body)
+    e = {**os.environ, "PYTHONPATH": str(ROOT), "NO_COLOR": "1"}
+    if env:
+        e.update(env)
+    return subprocess.run([sys.executable, name], cwd=repo,
+                          capture_output=True, text=True, env=e)
+
+
+class TestFindAnchorsAndDriver(unittest.TestCase):
+    def test_find_anchors(self):
+        d, shas = make_linear(n=16, bug_at=10)
+        body = (
+            "import sys; sys.path.insert(0, %r)\n" % str(ROOT)
+            + "import bisectlib as b\nfrom pathlib import Path\n"
+            "good, bad = b.find_anchors(bad='HEAD',\n"
+            "    probe=lambda: 'BUG' not in Path(b._toplevel(), 'code.txt').read_text())\n"
+            "print(good, bad)\n"
+        )
+        p = run_script(d, "fa.py", body)
+        self.assertEqual(p.returncode, 0, p.stderr)
+        good, bad = p.stdout.split()
+        self.assertEqual(bad, shas[-1])
+        self.assertNotEqual(good, bad)
+        # good must be bug-free, bad must have the bug, good must precede bad
+        self.assertNotIn("BUG", sh(d, "git", "show", f"{good}:code.txt").stdout)
+        self.assertIn("BUG", sh(d, "git", "show", f"{bad}:code.txt").stdout)
+        self.assertEqual(
+            sh(d, "git", "merge-base", "--is-ancestor", good, bad, check=False).returncode,
+            0)
+        # HEAD restored to the original branch
+        self.assertEqual(
+            sh(d, "git", "symbolic-ref", "--short", "HEAD").stdout.strip(), "master")
+
+    def test_driver_runs_bisect(self):
+        d, shas = make_linear(n=16, bug_at=10)
+        good, bad, bug = shas[0], shas[-1], shas[9]
+        recipe = (
+            "import sys; sys.path.insert(0, %r)\n" % str(ROOT)
+            + "import bisectlib as b\nb.test('! grep -q BUG code.txt')\n"
+        )
+        Path(d, "recipe.py").write_text(recipe)
+        driver = (
+            "import sys; sys.path.insert(0, %r)\n" % str(ROOT)
+            + "import bisectlib as b\n"
+            f"r = b.bisect({good!r}, {bad!r}, 'recipe.py', reset=True)\n"
+            "print('FIRSTBAD', r.first_bad if r else None)\n"
+        )
+        cache = tempfile.mkdtemp(prefix="bl-cache-")
+        p = run_script(d, "drive.py", driver, env={"XDG_CACHE_HOME": cache})
+        self.assertEqual(p.returncode, 0, p.stderr)
+        self.assertIn(f"FIRSTBAD {bug}", p.stdout)
+
+
 class TestEngine(unittest.TestCase):
     def test_end_of_script_is_good(self):
         d = make_repo()

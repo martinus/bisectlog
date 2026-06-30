@@ -6,7 +6,7 @@ Run with:  git bisect start <BAD> <GOOD> && git bisect run python examples/flaky
 from bisectlib import run, test, fixup, in_range
 
 # Commits in this range fail to build without a small patch; apply it just there.
-with fixup("patches/missing-header.patch", when=in_range("abc123".."def456")):
+with fixup("patches/missing-header.patch", when=in_range("abc123..def456")):
     run("cmake -B build")              # infra: a broken configure ABORTS (go fix it)
     run("cmake --build build -j")      # infra: a broken build ABORTS
 
