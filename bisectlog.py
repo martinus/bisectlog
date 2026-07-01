@@ -694,8 +694,16 @@ _ANSI = {"good": "32", "bad": "31", "skip": "33", "todo": "34", "abort": "91",
 _MARK = {"good": "✓", "bad": "✗", "skip": "⊘", "todo": "…", "abort": "■"}
 
 
+_SHA, _NW = 9, 5  # short-sha width, commit-count column width
+
+
 def render_terminal(rep: Report, color: bool = True, width: Optional[int] = None) -> str:
-    """A compact, aligned, colored one-line-per-evaluation table for the terminal."""
+    """A compact, aligned, colored one-line-per-evaluation table for the terminal.
+
+    Each row mirrors the report model on one line:
+        <status> <bad> <good> <midpoint> <commits> <subject>
+    where bad/good are the input-range bounds before that evaluation.
+    """
     def c(s: str, key: str) -> str:
         return f"\033[{_ANSI[key]}m{s}\033[0m" if color and key in _ANSI else s
 
@@ -708,29 +716,36 @@ def render_terminal(rep: Report, color: bool = True, width: Optional[int] = None
     head = (f"bisect  {c(rep.good_term, 'good')} {c(og, 'sha')}  "
             f"{c(rep.bad_term, 'bad')} {c(ob, 'sha')}")
     out.append(c(head, "bold") if color else head)
-
     if rep.first_bad:
-        subj = rep.subject(rep.first_bad)
-        out.append(c(f"🎯 first bad commit  {rep.short(rep.first_bad)}  {subj}", "bad"))
+        out.append(c(f"🎯 first bad commit  {rep.short(rep.first_bad)}  "
+                     f"{rep.subject(rep.first_bad)}", "bad"))
     elif (resume := resume_command(rep)):
         out.append(c(f"resume: {resume}", "dim"))
     if rep.note:
         out.append(c(f"! {rep.note}", "skip"))
     out.append("")
 
-    # columns: status(4) sha(9) range(>4) subject(rest)
-    sw = max((len(r.status) for r in rep.rows), default=4)
-    fixed = 2 + sw + 1 + 9 + 1 + 4 + 1        # mark + status + sha + range + gaps
-    subj_w = max(12, width - fixed)
+    sw = max([len(r.status) for r in rep.rows] + [4])
+    # prefix = mark(1)+sp + status+sp + 3*(sha+sp) + commits + 2sp
+    prefix = 2 + sw + 1 + (_SHA + 1) * 3 + _NW + 2
+    subj_w = max(12, width - prefix)
+
+    # column header (dim)
+    hdr = (f"  {'':<{sw}} {'bad':<{_SHA}} {'good':<{_SHA}} {'midpoint':<{_SHA}} "
+           f"{'cmts':>{_NW}}  subject")
+    out.append(c(hdr, "dim"))
+
     for r in rep.rows:
         mark = c(_MARK.get(r.status, " "), r.status)
         status = c(f"{r.status:<{sw}}", r.status)
-        sha = c(f"{rep.short(r.midpoint):<9}", "sha")
-        rng = c(f"{r.n_commits:>4}", "dim")
+        bad = c(f"{rep.short(r.bad):<{_SHA}}", "bad")
+        good = c(f"{rep.short(r.good):<{_SHA}}", "good")
+        mid = c(f"{rep.short(r.midpoint):<{_SHA}}", "sha")
+        n = c(f"{r.n_commits:>{_NW}}", "dim")
         subj = rep.subject(r.midpoint)
         if len(subj) > subj_w:
             subj = subj[:subj_w - 1] + "…"
-        out.append(f"{mark} {status} {sha} {rng} {subj}")
+        out.append(f"{mark} {status} {bad} {good} {mid} {n}  {subj}")
     return "\n".join(out) + "\n"
 
 

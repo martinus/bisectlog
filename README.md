@@ -159,17 +159,19 @@ bisectlog --watch               # re-render as the bisect progresses
 bisectlog --details             # include recorded commands/timings per commit (md/html)
 ```
 
-Run bare, it prints a compact terminal table — one line per evaluation, colored by
-status, subjects shortened to fit, with the first-bad commit called out:
+Run bare, it prints a compact terminal table — one line per evaluation (input range
+`bad`/`good` → `midpoint` → status), colored by status, `cmts` = commits still in the
+range, subjects shortened to fit, with the first-bad commit called out:
 
 ```
-bisect  good 2801e957  bad 79cb050c
-🎯 first bad commit  5c9dcafb  commit 8: tune the allocator
+bisect  good 2801e957a  bad 79cb050c2
+🎯 first bad commit  5c9dcafb3  commit 8: tune the allocator
 
-✓ good 9a8b7c9    11 refactor the parser subsystem
-✗ bad  95345541     6 add a caching layer
-✗ bad  5c9dcafb     3 tune the allocator
-✓ good 19d89b12     2 optimize the hot loop
+       bad       good      midpoint   cmts  subject
+✓ good 79cb050c2 2801e957a 9a8b7c9d1    11  refactor the parser subsystem
+✗ bad  79cb050c2 9a8b7c9d1 95345541b     6  add a caching layer
+✗ bad  95345541b 9a8b7c9d1 5c9dcafb3     3  tune the allocator
+✓ good 5c9dcafb3 9a8b7c9d1 19d89b121     2  optimize the hot loop
 ```
 
 ```

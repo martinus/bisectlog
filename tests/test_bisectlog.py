@@ -143,10 +143,10 @@ class TestBisectlog(unittest.TestCase):
         run(d, "git", "bisect", "start", shas[-1], shas[0])
         run(d, "git", "bisect", "run", "sh", "-c", "grep -q BUG code.txt && exit 1; exit 0")
         rep = bisectlog.build_report(d)
-        narrow = bisectlog.render_terminal(rep, color=False, width=45)
-        rows = narrow.splitlines()[3:]  # skip header/blank
-        self.assertTrue(any("…" in ln for ln in rows))
-        self.assertTrue(all(len(ln) <= 45 for ln in rows))
+        narrow = bisectlog.render_terminal(rep, color=False, width=70)
+        rows = [ln for ln in narrow.splitlines() if "…" in ln]
+        self.assertTrue(rows, "expected a truncated subject")
+        self.assertTrue(all(len(ln) <= 70 for ln in rows))
         run(d, "git", "bisect", "reset")
 
     def test_fmt_duration(self):
