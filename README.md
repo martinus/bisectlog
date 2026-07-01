@@ -124,6 +124,19 @@ The `bisect()` driver does this for you: if a bisect is already in progress it
 **resumes** instead of restarting, and it never resets on abort — so you just
 call `bisect(good, bad, "recipe.py")` again after fixing the recipe.
 
+If the abort was really just *this one commit* being untestable (not a recipe
+bug), skip it and carry on instead of changing anything:
+
+```sh
+git bisect skip                 # mark the current aborted commit untestable
+git bisect run python recipe.py # continue — git routes around it
+#   git bisect skip <sha>  /  git bisect skip A..B   # skip a specific commit/range
+```
+
+(To skip *every* unbuildable commit automatically instead of aborting, set
+`skip_on_error=True` on that `run()` step — best for a whole known-bad band,
+whereas `git bisect skip` is best for a one-off.)
+
 ## bisectlog (the report renderer)
 
 `bisectlog` is a standalone, **read-only** CLI that renders any `git bisect`
