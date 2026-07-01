@@ -242,6 +242,19 @@ class TestEngine(unittest.TestCase):
         self.assertEqual(run_recipe(d, "import bisectlib as b\nb.good()\nb.bad()\n")[0], 0)
         self.assertEqual(run_recipe(d, "import bisectlib as b\nb.abort()\n")[0], 128)
 
+    def test_streams_command_output(self):
+        d = make_repo()
+        body = ("import bisectlib as b\n"
+                "b.run('echo UNIQ_BUILD_MARKER')\n"
+                "b.test('echo UNIQ_TEST_MARKER')\n")
+        code, stderr, _ = run_recipe(d, body)
+        self.assertEqual(code, 0)
+        # command output is shown live (to stderr), not swallowed
+        self.assertIn("UNIQ_BUILD_MARKER", stderr)
+        self.assertIn("UNIQ_TEST_MARKER", stderr)
+        # and the old "bisectlog status:" announcement is gone
+        self.assertNotIn("bisectlog status", stderr)
+
     def test_check_does_not_exit(self):
         d = make_repo()
         body = ("import bisectlib as b\n"

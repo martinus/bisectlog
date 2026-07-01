@@ -122,10 +122,11 @@ stderr to your terminal live, so you watch progress as it goes:
 ```
 
 Color only when `stderr.isatty()` and `NO_COLOR` is unset; otherwise plain text. The line
-includes the short sha + verb so interleaved output stays readable. Full per-command
-output is captured to the per-commit log dir, and each step is appended to that commit's
-`eval.json` sidecar (cmd, exit code, duration, flaky/benchmark stats, fixups) — the
-recorded facts `bisectlog` reads for its detail view (§6).
+includes the short sha + verb so interleaved output stays readable. The command's combined
+stdout+stderr is **streamed live to stderr as it runs** (so you watch the build/test; git
+bisect run forwards it to your terminal) while also being captured to the per-commit log
+dir. Each step is appended to that commit's `eval.json` sidecar (cmd, exit code, duration,
+flaky/benchmark stats, fixups) — the recorded facts `bisectlog` reads for its detail view (§6).
 
 ### 4.1 `run` — infrastructure steps (abort on error by default)
 

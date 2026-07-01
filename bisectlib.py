@@ -38,6 +38,7 @@ import shlex
 import signal
 import subprocess
 import sys
+import threading
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -220,31 +221,52 @@ class Result:
 
 def _exec(cmd: str, timeout: Optional[float], log_path: Optional[Path],
           cwd: Optional[str] = None) -> Result:
-    """Run a shell command, capturing combined output; kill the group on timeout."""
+    """Run a shell command, streaming its output live while also capturing it.
+
+    Combined stdout+stderr is echoed to this process's stderr as it arrives (so
+    you watch the build/test run — git bisect run forwards it to your terminal)
+    and simultaneously collected into the returned Result and the log file.
+    The process group is killed on timeout.
+    """
     start = time.monotonic()
     proc = subprocess.Popen(
         cmd, shell=True, cwd=_workdir(cwd),
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-        start_new_session=True,
+        bufsize=1, start_new_session=True,
     )
+    captured: list[str] = []
+
+    def _pump() -> None:
+        for line in proc.stdout:            # line-buffered; live as it arrives
+            captured.append(line)
+            sys.stderr.write(line)
+        sys.stderr.flush()
+
+    pump = threading.Thread(target=_pump, daemon=True)
+    pump.start()
+
+    timed_out = False
     try:
-        out, _ = proc.communicate(timeout=timeout)
-        code = proc.returncode
+        proc.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
+        timed_out = True
         try:
             os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
         except (ProcessLookupError, PermissionError):
             pass
-        out, _ = proc.communicate()
-        code = -1  # sentinel for timeout
+        proc.wait()
+    pump.join()
+
+    out = "".join(captured)
+    code = -1 if timed_out else proc.returncode   # -1 == timeout sentinel
     seconds = time.monotonic() - start
     if log_path is not None:
         try:
             log_path.parent.mkdir(parents=True, exist_ok=True)
-            log_path.write_text(out or "")
+            log_path.write_text(out)
         except OSError:
             pass
-    return Result(code=code, out=out or "", seconds=seconds)
+    return Result(code=code, out=out, seconds=seconds)
 
 
 # --------------------------------------------------------------- log directory
@@ -285,19 +307,6 @@ def _commit_log_dir() -> Path:
     return _logs_dir() / (sha() if _in_git() else "unknown")
 
 
-_announced = False
-
-
-def _announce() -> None:
-    global _announced
-    if _announced:
-        return
-    _announced = True
-    sys.stderr.write(f"{_C['dim'] if _use_color() else ''}"
-                     f"bisectlog status: {_status_md_path()}"
-                     f"{_C['reset'] if _use_color() else ''}\n")
-
-
 # --------------------------------------------------------------------- verdict
 def _decide(outcome_code: int, reason: str = "") -> "NoReturn":  # type: ignore[name-defined]
     """Record the verdict and exit the process with the bisect exit code."""
@@ -307,7 +316,6 @@ def _decide(outcome_code: int, reason: str = "") -> "NoReturn":  # type: ignore[
 
 
 def _verdict(code: int, msg: str) -> "NoReturn":  # type: ignore[name-defined]
-    _announce()
     label = _OUTCOME_NAME[code]
     if _use_color():
         sys.stderr.write(f"{_C.get(label, '')}● {label}{_C['reset']} {msg}\n")
@@ -356,7 +364,6 @@ def run(cmd: str, *, skip_on_error: bool = False, timeout: Optional[float] = Non
     ``cwd`` sets the working directory (relative to the repo root; absolute paths
     honoured); defaults to the repo root or ``configure(cwd=…)``.
     """
-    _announce()
     _echo_start("run", cmd)
     res = _exec(cmd, timeout, _commit_log_dir() / f"{len(_steps)+1:02d}-run.log", cwd)
     timed_out = res.code == -1
@@ -409,7 +416,6 @@ def test(cmd: str, *, attempts: int = 1, min_passes: Optional[int] = None,
     ``warmup`` runs extra leading throwaway executions (excluded from the pass
     count). ``bad_when="pass"`` inverts the bug direction.
     """
-    _announce()
     _echo_start("test", cmd)
     if passed is None:
         passed = lambda r: r.ok  # noqa: E731
@@ -463,7 +469,6 @@ def test(cmd: str, *, attempts: int = 1, min_passes: Optional[int] = None,
 def check(cmd: str, *, timeout: Optional[float] = None,
           cwd: Optional[str] = None) -> Result:
     """Run once and return the Result. NEVER exits the process."""
-    _announce()
     _echo_start("check", cmd)
     res = _exec(cmd, timeout, _commit_log_dir() / f"{len(_steps)+1:02d}-check.log", cwd)
     _record_step("check", cmd, res, res.ok)
