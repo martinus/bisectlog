@@ -16,8 +16,6 @@ hand-rolled bisect scripts painful:
 - **Per-range build fixes.** `fixup(patch=…)` / `replace(...)` apply a patch or a
   sed-like edit for the commits that need it, then **auto-revert** so the tree
   stays clean for the next checkout.
-- **Finding the range.** `find_anchors()` searches backward to locate a good/bad
-  pair before you even start.
 - **A clear report.** Every run records what happened; the companion
   [`bisectlog`](#bisectlog-the-report-renderer) tool renders the whole session as
   Markdown or HTML.
@@ -95,7 +93,7 @@ test("./bench", attempts=5, min_passes=3, passed=lambda r: r.seconds < 6.7)  # m
 (`min(times)<T` → `min_passes=1`; `max(times)<T` → all; `median<T` → majority.)
 
 ```python
-from bisectlib import run, test, check, replace, fixup, in_range, find_anchors, bisect
+from bisectlib import run, test, check, good, bad, skip, abort, replace, fixup, in_range
 ```
 
 - **`replace(path, old, new)`** — sed-like edit, auto-reverted. `old` is a literal
@@ -103,10 +101,6 @@ from bisectlib import run, test, check, replace, fixup, in_range, find_anchors, 
 - **`fixup(patch=… | cherry_pick=…, when=…)`** — context manager that applies a
   patch/cherry-pick for its block, then reverts.
 - **`in_range("v1.0..v2.0")`, `touches("src/x.c")`** — predicates for `when=`.
-- **`find_anchors(bad="HEAD", probe=…)`** — expanding backward search for a
-  good/bad pair; `probe` is a non-exiting predicate (e.g. `lambda: check("ctest").ok`).
-- **`bisect(good, bad, "recipe.py")`** — convenience driver: runs the whole
-  `git bisect start/run` and renders the final report.
 
 ### Exit-code contract
 
@@ -134,10 +128,6 @@ git bisect run python recipe.py     # aborts on a broken recipe → state kept
 #   … edit recipe.py (add a fixup, set skip_on_error=True, fix a typo) …
 git bisect run python recipe.py     # SAME command → re-tests the current commit and continues
 ```
-
-The `bisect()` driver does this for you: if a bisect is already in progress it
-**resumes** instead of restarting, and it never resets on abort — so you just
-call `bisect(good, bad, "recipe.py")` again after fixing the recipe.
 
 If the abort was really just *this one commit* being untestable (not a recipe
 bug), skip it and carry on instead of changing anything:
@@ -185,11 +175,32 @@ bisectlog --details             # include recorded commands/timings per commit
 Each row reads in causal order: the **input range** (`bad`/`good`) → the
 **midpoint** git chose → the **status**. Watch the range funnel down.
 
-## Install
+## Install / how a recipe finds `bisectlib`
 
+Your `recipe.py` does `from bisectlib import run, test, …`. Python needs to be able
+to import that module — there are two easy ways:
+
+**1. Install it (recommended for repeated use).**
 ```sh
-pip install -e .        # provides the `bisectlog` and `git-bisectlog` commands
+pip install -e /path/to/bisectlog   # or: pip install bisectlog
 ```
+Now `import bisectlib` works from any repo, and you also get the `bisectlog` /
+`git-bisectlog` commands. Just write `recipe.py` and run
+`git bisect run python recipe.py`.
+
+**2. Zero-install: drop `bisectlib.py` next to your recipe.**
+When you run `python recipe.py`, Python puts the recipe's own directory on
+`sys.path`, so a `bisectlib.py` sitting beside `recipe.py` is imported
+automatically — no install, no `PYTHONPATH`. Copy `bisectlib.py` (and
+`bisectlog.py` if you want the auto-rendered status report) next to the recipe.
+
+> Keep those copies **untracked** in the repo you're bisecting. Untracked files
+> survive `git checkout`, so they persist across every commit of the bisect — but
+> if you *commit* them they'd vanish on older commits (which don't have them) and
+> the import would fail mid-bisect. Untracked = present everywhere, part of nothing.
+
+(A bare `import bisectlib` without either of the above fails because the module
+isn't on `sys.path` — that's why the tests inject it explicitly.)
 
 Requires Python 3.10+. No third-party dependencies.
 
@@ -206,7 +217,6 @@ See [`examples/`](examples/):
 | `bisect_on_output.py` | bisect on output *content* (when a warning appeared) |
 | `metric_binary_size.py` | a numeric-budget bisect (binary size crossed a threshold) |
 | `build_fix_cherrypick.py` | keep an un-buildable range testable via `fixup(cherry_pick=…)` |
-| `find_anchors_then_bisect.py` | auto-locate the good/bad range, then bisect — one script |
 
 ## Development
 

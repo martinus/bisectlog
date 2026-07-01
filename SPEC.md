@@ -24,7 +24,6 @@ It should make these things easy:
 4. Detect performance regressions (benchmark against a max runtime).
 5. Distinguish **infrastructure failure** (can't test this commit) from a **real
    good/bad result**, and give the human a chance to fix the recipe and resume.
-6. Help find the before/after anchor commits to seed the bisect.
 
 The user writes a tiny recipe; runs `git bisect run python recipe.py`.
 
@@ -295,29 +294,21 @@ configure(status_md=None,   # default: ${XDG_CACHE_HOME:-~/.cache}/bisectlib/<bi
           color=None)       # None=auto (tty & !NO_COLOR) | True | False
 ```
 
-### 4.8 `find_anchors` — locate good/bad before bisect starts
+### 4.8 verdict primitives — decide directly from Python
 
-Expanding (galloping) backward search along first-parent history: test HEAD (assumed
-bad), then go back 1, 2, 4, 8, … commits until one tests good.
-
-```python
-good, bad = find_anchors(
-    bad="HEAD",
-    test=lambda: test("ctest -R foo"),  # reuse the same verdict
-    max_back=512,
-    by="commits",   # or by="days" to step through history by date
-)
-# then: git bisect start {bad} {good}
-```
-
-Optionally a thin driver that wraps the whole thing:
+`good()` / `bad()` / `skip()` / `abort()` exit immediately with the matching bisect exit
+code, so a recipe can decide from arbitrary Python after measuring with `check()` — no need
+to shell back out to `test` just to compare values:
 
 ```python
-# library-driven mode (convenience) — shells out to git bisect start/run for you
-bisect(good=..., bad=..., recipe="recipe.py")
+size = int(check("stat -c%s build/app").out)
+if size > 5 * 1024 * 1024:
+    bad("binary too big")     # exit 1; reaching the end instead is good
 ```
 
-Build the **recipe-as-script** mode first; the driver is a thin wrapper on top.
+> **Out of scope (removed):** an anchor-finding helper and a library-driven `bisect(...)`
+> convenience driver were considered but cut — the recipe-as-script model
+> (`git bisect run python recipe.py`) plus manual `git bisect start` is the whole surface.
 
 ---
 
@@ -387,10 +378,8 @@ merge logic, no write races.
 
 > **Finalization caveat.** `git bisect run` records a commit's verdict *after* the recipe
 > process exits, so in pure `git bisect run python recipe.py` mode the **last** evaluated
-> commit shows as `🕒 todo` until something re-renders. Provide a `render` entry point
-> (`bisectlog` / `python -m bisectlog`) for an on-demand refresh, and have the driver
-> (`bisect(...)`, §4.8) render once when `git bisect run` returns so the finished report is
-> complete.
+> commit shows as `🕒 todo` until something re-renders. Run `bisectlog` (or
+> `python -m bisectlog`) once when the bisect finishes for a complete report.
 
 > **What's *not* in the log:** per-eval wall-clock timing, flaky ratios ("2/5 pass"), and
 > which fixup/replace applied. The 5-column table doesn't need them (they live in the
@@ -670,18 +659,16 @@ test("./run_tests")
    synthesize the in-flight `todo` row from `HEAD`, query git for dates/counts, emit
    Markdown or self-contained HTML (`--format`, `-o`, `--open`, `--watch`, `-C`, `--log`).
    The library imports it as the canonical renderer and calls it at the top of each
-   evaluation + at driver end; per-commit log dirs hold full command output (+ optional
-   sidecar for timing/flaky detail). **Good candidate to build first** — independently
-   useful and it nails down the `git bisect log` parsing everything else relies on.
+   evaluation; per-commit log dirs hold full command output (+ optional sidecar for
+   timing/flaky detail). **Good candidate to build first** — independently useful and it
+   nails down the `git bisect log` parsing everything else relies on.
 7. **Console echo** in color to stderr (auto tty/`NO_COLOR` detection).
 8. **Dry-run mode:** outside a live bisect (no `refs/bisect/*`), `python recipe.py` still
    runs the steps against HEAD and prints the verdict, gracefully skipping the range
    columns — so recipes can be iterated on without starting a bisect.
-9. **`find_anchors`** galloping search.
-10. **Driver** (`bisect(good, bad, recipe)`) wrapping `git bisect start/run`.
-11. Tests: a fixture git repo with a planted regression; assert the recipe drives bisect
-    to the right commit, that SKIP/ABORT behave, and that the tree is always clean between
-    commits.
+9. Tests: a fixture git repo with a planted regression; assert the recipe drives bisect
+   to the right commit, that SKIP/ABORT behave, and that the tree is always clean between
+   commits.
 
 ### Packaging
 - Standalone repo / pip package (no dependency on the keto-calculator repos — unrelated).

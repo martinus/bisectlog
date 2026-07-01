@@ -41,11 +41,19 @@ import sys
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Callable, Optional, Union
 
 __version__ = "0.1.0"
+
+__all__ = [
+    "run", "test", "check",                 # the verbs
+    "good", "bad", "skip", "abort",         # verdict primitives
+    "replace", "fixup",                     # tree edits (auto-reverted)
+    "in_range", "touches", "sha", "subject", "is_clean",  # git helpers
+    "configure", "Result",
+    "GOOD", "BAD", "SKIP", "ABORT",
+]
 
 # exit codes / outcomes -------------------------------------------------------
 GOOD, BAD, SKIP, ABORT = 0, 1, 125, 128
@@ -159,145 +167,6 @@ def touches(path: str) -> bool:
     """True if the HEAD commit modified `path`."""
     files = _git("show", "--name-only", "--format=", "HEAD").splitlines()
     return any(f == path or f.startswith(path.rstrip("/") + "/") for f in files)
-
-
-# ------------------------------------------------------------------ find_anchors
-def _checkout(ref: str) -> None:
-    subprocess.run(["git", "checkout", "--quiet", ref],
-                   cwd=_toplevel(), capture_output=True, check=True)
-
-
-def find_anchors(bad: str = "HEAD", *, probe: Callable[[], Optional[bool]],
-                 max_back: int = 512, by: str = "commits"):
-    """Locate a good/bad pair to seed a bisect, via an expanding backward search.
-
-    Confirms `bad` is bad, then walks first-parent history backward in growing
-    steps (1, 2, 4, 8, … commits — or days, with by="days") until `probe` reports
-    a good commit. Returns ``(good_sha, bad_sha)``; feed them to
-    ``git bisect start <bad> <good>`` (or to :func:`bisect`).
-
-    `probe` is a non-exiting predicate run with each candidate checked out:
-    return True for good, False for bad, None for "can't tell / skip". Build it
-    with :func:`check`, e.g. ``probe=lambda: check("ctest").ok``.
-
-    The original HEAD is always restored before returning.
-    """
-    if _git("status", "--porcelain", "--untracked-files=no"):
-        raise RuntimeError(
-            "tracked files are modified; commit or stash before find_anchors()")
-    if by not in ("commits", "days"):
-        raise ValueError("by must be 'commits' or 'days'")
-
-    bad_sha = _git("rev-parse", bad)
-    # the ref to restore afterwards (branch name if on one, else the sha)
-    orig = _git("symbolic-ref", "--quiet", "--short", "HEAD", check=False) or bad_sha
-    bad_date = datetime.fromisoformat(_git("show", "-s", "--format=%cI", bad_sha))
-
-    def candidate(step: int) -> Optional[str]:
-        if by == "days":
-            cutoff = (bad_date - timedelta(days=step)).isoformat()
-            return _git("rev-list", "-1", f"--before={cutoff}", bad_sha,
-                        check=False) or None
-        return _git("rev-parse", "--verify", "--quiet", f"{bad_sha}~{step}",
-                    check=False) or None
-
-    def root() -> str:
-        return _git("rev-list", "--max-parents=0", bad_sha).splitlines()[-1]
-
-    try:
-        _checkout(bad_sha)
-        if probe() is True:
-            raise RuntimeError(
-                f"{bad} ({bad_sha[:9]}) tests good — nothing to bisect "
-                "(is it really the bad commit?)")
-
-        step = 1
-        tried_root = False
-        while step <= max_back:
-            cand = candidate(step)
-            if cand is None:  # walked past the first commit
-                if tried_root:
-                    break
-                cand, tried_root = root(), True
-            _checkout(cand)
-            verdict = probe()
-            if verdict is True:
-                sys.stderr.write(
-                    f"find_anchors: good {cand[:9]} · bad {bad_sha[:9]}\n")
-                return cand, bad_sha
-            if cand == root() and verdict is not True:
-                raise RuntimeError(
-                    "reached the root commit without finding a good one — "
-                    "the regression may predate history, or widen the probe")
-            step *= 2
-        raise RuntimeError(
-            f"no good commit within {max_back} commits/days back; "
-            "increase max_back or pick the good anchor manually")
-    finally:
-        _checkout(orig)
-
-
-def bisecting() -> bool:
-    """True if a `git bisect` session is currently in progress."""
-    return subprocess.run(
-        ["git", "bisect", "log"], cwd=_toplevel(), capture_output=True
-    ).returncode == 0
-
-
-# ----------------------------------------------------------------------- driver
-def bisect(good: str, bad: str, recipe: str, *, python: Optional[str] = None,
-           render: bool = True, reset: bool = False,
-           args: tuple = ()) -> Optional["object"]:
-    """Convenience driver: run a whole bisect from Python.
-
-    Runs ``git bisect start <bad> <good>`` (only if not already bisecting) then
-    ``git bisect run <python> <recipe> [args...]``.
-
-    **Resumable.** If the recipe aborts (exit >=128) the bisect stops with its
-    state preserved. Fix the recipe and simply call ``bisect(...)`` again: it
-    detects the in-progress session and **resumes** (re-running ``git bisect run``
-    without restarting; the good/bad arguments are ignored). Bisect state is kept
-    on abort even if ``reset=True``, so you never lose progress.
-
-    When `render` is set, writes the status report (via bisectlog) and prints the
-    first bad commit. Returns the bisectlog ``Report`` (or None). Pass reset=True
-    to end the bisect after a *successful* run.
-    """
-    python = python or sys.executable
-    resuming = bisecting()
-    if resuming:
-        sys.stderr.write(
-            "bisectlib: a bisect is already in progress — resuming where it "
-            "stopped (good/bad arguments ignored; `git bisect reset` to start over).\n")
-    else:
-        _git("bisect", "start", _git("rev-parse", bad), _git("rev-parse", good))
-    proc = subprocess.run(["git", "bisect", "run", python, recipe, *args])
-    aborted = proc.returncode != 0  # git bisect run exits nonzero on abort (>=128)
-
-    report = None
-    if render:
-        try:
-            import bisectlog
-            report = bisectlog.build_report(_toplevel(), logs_dir=str(_logs_dir()))
-            if report is not None:
-                path = _status_md_path()
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text(bisectlog.render_markdown(report, details=True))
-                sys.stderr.write(f"bisect report: {path}\n")
-                if report.first_bad:
-                    sys.stderr.write(
-                        f"first bad commit: {report.first_bad[:9]} "
-                        f"{report.subject(report.first_bad)}\n")
-        except Exception:
-            pass
-
-    if aborted:
-        sys.stderr.write(
-            "bisectlib: recipe aborted — bisect state kept. Fix the recipe and "
-            "call bisect(...) again (or re-run `git bisect run`) to resume.\n")
-    elif reset:
-        _git("bisect", "reset")
-    return report
 
 
 # --------------------------------------------------------------------- console
