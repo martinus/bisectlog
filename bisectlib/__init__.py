@@ -339,19 +339,24 @@ def _cache_base() -> Path:
 _resolved_logs_dir: Optional[Path] = None
 
 
+_ID_LEN = 8  # short-id length used in the session dir name (and glob key)
+
+
 def _session_dirname() -> str:
     """A human-readable, stable directory name for this bisect session.
 
-    ``<YYYY-MM-DD_HHMMSS>_<good>..<bad>_<id>`` — a timestamp for sorting/telling
-    sessions apart at a glance, the short ``good..bad`` range so you can see what
-    was bisected, and the stable 12-char id as a collision-proof suffix (the id
-    is what we glob on to keep the name fixed for the whole session).
+    ``<YYYY-MM-DD>_<HHMM>_<good>-<bad>_<id>`` — a date/time to tell sessions
+    apart and spot the latest at a glance, the short ``good-bad`` range so you
+    can see what was bisected, and a short id as a collision-proof suffix (the id
+    is what we glob on to keep the name fixed for the whole session). Kept lean:
+    7-char shas, minute-precision time, and an 8-char id, e.g.
+    ``2026-07-02_0830_ac6590587-720acb61c`` → ``2026-07-02_0830_ac65905-720acb6_49fd6cd5``.
     """
     _, bad0, good0 = _bisect_anchors()
-    bid = _bisect_id()
-    stamp = time.strftime("%Y-%m-%d_%H%M%S")
+    bid = _bisect_id()[:_ID_LEN]
+    stamp = time.strftime("%Y-%m-%d_%H%M")
     if good0 and bad0:
-        return f"{stamp}_{good0[:9]}..{bad0[:9]}_{bid}"
+        return f"{stamp}_{good0[:7]}-{bad0[:7]}_{bid}"
     return f"{stamp}_{bid}"
 
 
@@ -362,7 +367,7 @@ def _logs_dir() -> Path:
     if _resolved_logs_dir is not None:
         return _resolved_logs_dir
     base = _cache_base()
-    bid = _bisect_id()
+    bid = _bisect_id()[:_ID_LEN]
     # Reuse an existing session dir for this id so the name (and its timestamp)
     # stays fixed across every commit evaluated; only the first process creates it.
     existing = sorted(base.glob(f"*_{bid}"))
@@ -608,6 +613,7 @@ def _record_step(verb, cmd, res: Optional[Result], ok, extra=None, outcome=None,
     if extra:
         step.update(extra)
     _steps.append(step)
+    _flush_status()  # keep status.md current after every step, so it's watchable live
 
 
 # -------------------------------------------------------------------- replace
@@ -717,6 +723,18 @@ def _refresh_status_md() -> None:
         path.write_text(bisectlog.render_markdown(rep, details=True))
     except Exception:
         pass  # rendering is best-effort, never breaks the recipe
+
+
+def _flush_status() -> None:
+    """Persist the in-progress sidecar and re-render status.md.
+
+    Called after every step so the current commit's `eval.json` and the rendered
+    `status.md` reflect progress live (the commit shows as the in-flight `todo`
+    row with its steps so far) — a file you can `bisectlog --watch` or tail while
+    a long build/test runs, instead of only seeing it once the verdict lands.
+    """
+    _write_sidecar()
+    _refresh_status_md()
 
 
 @atexit.register
